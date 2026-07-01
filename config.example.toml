@@ -1,0 +1,35 @@
+# Only postgres is supported ;)
+[database]
+host = "localhost"
+port = 5432
+user = "rcjv_paperless"
+pass = "password"
+database = "rcjv_paperless"
+timezone = "Europe/Berlin"
+
+[server]
+# The interface the server will listen on
+host = "0.0.0.0"
+# The port the server will listen on
+port = 8000
+
+[catigoal]
+# Base URL for the Catigoal JSON API, including trailing slash or not.
+base_url = "https://example.invalid/api/"
+
+[docuseal]
+# Use https://api.docuseal.eu for the EU cloud if your account lives there.
+base_url = "https://api.docuseal.com"
+api_key = ""
+template_id = 0
+team1_role = "Team 1"
+team2_role = "Team 2"
+completed_redirect_url = ""
+
+[auth]
+# FusionAuth issuer, for example "https://auth.example.org".
+issuer = ""
+client_id = ""
+required_role = "admin"
+# Keep false in production. True lets local admin APIs work without FusionAuth.
+dev_allow_admin = true

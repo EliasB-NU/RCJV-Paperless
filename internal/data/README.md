@@ -1,0 +1,1 @@
+Defines the catigoal return data and exposes functions to fetch this data.
