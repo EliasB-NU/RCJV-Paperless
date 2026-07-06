@@ -2,6 +2,7 @@ import { setAdminToken } from './api';
 import type { AuthConfig } from './types';
 
 const verifierKey = 'rcjv.pkce.verifier';
+const returnToKey = 'rcjv.pkce.return_to';
 
 function randomString(length = 64): string {
   const bytes = new Uint8Array(length);
@@ -16,10 +17,11 @@ function base64Url(bytes: ArrayBuffer): string {
     .replace(/=+$/, '');
 }
 
-export async function beginLogin(config: AuthConfig) {
+export async function beginLogin(config: AuthConfig, returnTo = `${window.location.pathname}${window.location.search}`) {
   if (!config.issuer || !config.client_id) throw new Error('FusionAuth is not configured');
   const verifier = randomString(48);
   sessionStorage.setItem(verifierKey, verifier);
+  sessionStorage.setItem(returnToKey, returnTo.startsWith('/') ? returnTo : '/');
   const challenge = base64Url(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(verifier)));
   const redirectUri = `${window.location.origin}/admin/callback`;
   const url = new URL(`${config.issuer}/oauth2/authorize`);
@@ -52,5 +54,7 @@ export async function completeLogin(config: AuthConfig) {
   const token = (await response.json()) as { access_token?: string; id_token?: string };
   setAdminToken(token.access_token || token.id_token || '');
   sessionStorage.removeItem(verifierKey);
-  window.history.replaceState({}, '', '/admin');
+  const returnTo = sessionStorage.getItem(returnToKey) || '/admin';
+  sessionStorage.removeItem(returnToKey);
+  window.location.replace(returnTo);
 }

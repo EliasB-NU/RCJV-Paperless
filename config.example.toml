@@ -31,5 +31,5 @@ completed_redirect_url = ""
 issuer = ""
 client_id = ""
 required_role = "admin"
-# Keep false in production. True lets local admin APIs work without FusionAuth.
+# Keep false in production. True lets local referee and admin APIs work without FusionAuth.
 dev_allow_admin = true

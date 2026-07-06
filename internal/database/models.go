@@ -75,6 +75,7 @@ type ScoreSheet struct {
 
 	PrecheckJSON  string `gorm:"type:text" json:"precheck_json"`
 	EventsJSON    string `gorm:"type:text" json:"events_json"`
+	StateJSON     string `gorm:"type:text" json:"state_json"`
 	Comments      string `gorm:"type:text" json:"comments"`
 	KickoffTeam   string `json:"kickoff_team"`
 	PenaltyGoals1 int    `json:"penalty_goals1"`

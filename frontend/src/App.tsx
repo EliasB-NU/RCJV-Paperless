@@ -1,10 +1,11 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import {
   Bluetooth,
   Check,
   Clock,
   Download,
   LogIn,
+  LogOut,
   Pause,
   Play,
   RefreshCcw,
@@ -18,7 +19,7 @@ import {
 import { api, getAdminToken, setAdminToken } from './api';
 import { beginLogin, completeLogin } from './auth';
 import { bluetoothSupported, RobotBleController, type RobotSlot } from './ble';
-import type { AuthConfig, Field, LeagueSettings, Match, MatchPrecheck, RobotCheck } from './types';
+import type { AuthConfig, Field, LeagueSettings, Match, MatchPrecheck, MatchRuntimeState, PenaltyTimers, RobotCheck } from './types';
 
 const fieldStorageKey = 'rcjv.selectedField';
 
@@ -28,8 +29,82 @@ type MatchStage = 'first_half' | 'half_time' | 'second_half' | 'full_time';
 export default function App() {
   const path = window.location.pathname;
   if (path === '/admin/callback') return <AdminCallback />;
-  if (path.startsWith('/admin')) return <AdminPanel />;
-  return <TabletApp />;
+  if (path.startsWith('/admin')) {
+    return (
+      <AuthGate area="Admin">
+        <AdminPanel />
+      </AuthGate>
+    );
+  }
+  return (
+    <AuthGate area="Field Console">
+      <TabletApp />
+    </AuthGate>
+  );
+}
+
+function AuthGate({ area, children }: { area: string; children: ReactNode }) {
+  const [authConfig, setAuthConfig] = useState<AuthConfig | null>(null);
+  const [tokenDraft, setTokenDraft] = useState(getAdminToken());
+  const [error, setError] = useState('');
+
+  useEffect(() => {
+    api.authConfig().then(setAuthConfig).catch((err: Error) => setError(err.message));
+  }, []);
+
+  if (!authConfig) {
+    return <div className="center-message">{error || 'Loading...'}</div>;
+  }
+  if (authConfig.dev_allow || getAdminToken()) {
+    return <>{children}</>;
+  }
+
+  return (
+    <div className="app-shell">
+      <header className="topbar">
+        <div>
+          <div className="eyebrow">RCJV Paperless</div>
+          <h1>{area}</h1>
+        </div>
+      </header>
+      <main className="workspace auth-workspace">
+        <section className="panel auth-panel">
+          <div className="section-head">
+            <h2>Sign In</h2>
+            <Shield size={20} />
+          </div>
+          {error && <div className="inline-error">{error}</div>}
+          <button className="primary icon-button" onClick={() => void beginLogin(authConfig)} disabled={!authConfig.issuer || !authConfig.client_id}>
+            <LogIn size={18} />
+            FusionAuth
+          </button>
+          <label className="token-input">
+            <span>Bearer Token</span>
+            <input
+              value={tokenDraft}
+              onChange={(event) => setTokenDraft(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter') {
+                  setAdminToken(tokenDraft);
+                  window.location.reload();
+                }
+              }}
+            />
+          </label>
+          <button
+            className="secondary icon-button"
+            onClick={() => {
+              setAdminToken(tokenDraft);
+              window.location.reload();
+            }}
+          >
+            <Check size={18} />
+            Use Token
+          </button>
+        </section>
+      </main>
+    </div>
+  );
 }
 
 function TabletApp() {
@@ -54,7 +129,7 @@ function TabletApp() {
     setLoading(true);
     api
       .tabletMatches(selectedField)
-      .then(setMatches)
+      .then((loaded) => setMatches(sortMatchesByStartTime(loaded)))
       .catch((err: Error) => setError(err.message))
       .finally(() => setLoading(false));
   }, [selectedField]);
@@ -63,7 +138,7 @@ function TabletApp() {
     if (!selectedField) return;
     setLoading(true);
     try {
-      setMatches(await api.tabletMatches(selectedField));
+      setMatches(sortMatchesByStartTime(await api.tabletMatches(selectedField)));
     } catch (err) {
       setError((err as Error).message);
     } finally {
@@ -102,6 +177,10 @@ function TabletApp() {
             <Shield size={20} />
             Admin
           </a>
+          <button className="secondary icon-button" onClick={signOut}>
+            <LogOut size={18} />
+            Sign Out
+          </button>
           {screen !== 'home' && (
             <button className="secondary" onClick={returnHome}>
               Field Home
@@ -346,15 +425,18 @@ function MatchMode({
 }) {
   const settings = match.league_settings;
   const slots = useMemo(() => buildSlots(settings.robots_per_team || 2), [settings.robots_per_team]);
+  const restoredState = useMemo(() => restoreRuntimeState(match, settings), [match, settings]);
   const controllerRef = useRef<RobotBleController | null>(null);
   const [bleVersion, setBleVersion] = useState(0);
-  const [stage, setStage] = useState<MatchStage>('first_half');
-  const [running, setRunning] = useState(false);
-  const [remaining, setRemaining] = useState(settings.period_seconds || 600);
-  const [score1, setScore1] = useState(match.score_sheet?.final_goals1 ?? match.goals1 ?? 0);
-  const [score2, setScore2] = useState(match.score_sheet?.final_goals2 ?? match.goals2 ?? 0);
-  const [comments, setComments] = useState(match.score_sheet?.comments ?? '');
+  const [stage, setStage] = useState<MatchStage>(restoredState.stage);
+  const [running, setRunning] = useState(restoredState.running);
+  const [remaining, setRemaining] = useState(restoredState.remaining);
+  const [score1, setScore1] = useState(restoredState.score1);
+  const [score2, setScore2] = useState(restoredState.score2);
+  const [comments, setComments] = useState(restoredState.comments);
+  const [penaltyTimers, setPenaltyTimers] = useState<PenaltyTimers>(restoredState.penalty_timers);
   const [saving, setSaving] = useState(false);
+  const liveStateRef = useRef<MatchRuntimeState>(restoredState);
 
   if (!controllerRef.current) {
     controllerRef.current = new RobotBleController(slots);
@@ -362,7 +444,9 @@ function MatchMode({
   }
   const controller = controllerRef.current;
   const connections = controller.list();
-  const activeSlotIDs = slots.map((slot) => slot.id);
+  const activeSlotIDs = useMemo(() => slots.map((slot) => slot.id), [slots]);
+  const penaltyTimerKey = useMemo(() => JSON.stringify(penaltyTimers), [penaltyTimers]);
+  const hasActivePenalty = useMemo(() => Object.values(penaltyTimers).some((seconds) => seconds > 0), [penaltyTimerKey]);
 
   useEffect(() => {
     if (!running) return;
@@ -371,6 +455,40 @@ function MatchMode({
     }, 1000);
     return () => window.clearInterval(timer);
   }, [running]);
+
+  useEffect(() => {
+    if (!hasActivePenalty) return;
+    const timer = window.setInterval(() => {
+      setPenaltyTimers((current) => {
+        const next: PenaltyTimers = {};
+        for (const [slotID, seconds] of Object.entries(current)) {
+          const remainingSeconds = Math.max(0, seconds - 1);
+          if (remainingSeconds > 0) next[slotID] = remainingSeconds;
+        }
+        return next;
+      });
+    }, 1000);
+    return () => window.clearInterval(timer);
+  }, [hasActivePenalty]);
+
+  useEffect(() => {
+    liveStateRef.current = runtimeState(stage, running, remaining, score1, score2, comments, penaltyTimers);
+  }, [stage, running, remaining, score1, score2, comments, penaltyTimerKey]);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      void persistCurrentState().catch((err: Error) => onError(err.message));
+    }, 800);
+    return () => window.clearTimeout(timer);
+  }, [match.id, stage, running, score1, score2, comments, penaltyTimerKey]);
+
+  useEffect(() => {
+    if (!running && !hasActivePenalty) return;
+    const timer = window.setInterval(() => {
+      void persistCurrentState().catch((err: Error) => onError(err.message));
+    }, 10000);
+    return () => window.clearInterval(timer);
+  }, [running, hasActivePenalty, match.id]);
 
   useEffect(() => {
     if (remaining > 0 || !running) return;
@@ -387,6 +505,12 @@ function MatchMode({
       void controller.gameOver(activeSlotIDs, score1, score2).catch((err: Error) => onError(err.message));
     }
   }, [remaining, running, stage, settings, controller, activeSlotIDs, score1, score2, onError]);
+
+  async function persistCurrentState() {
+    const snapshot = { ...liveStateRef.current, saved_at: new Date().toISOString() };
+    liveStateRef.current = snapshot;
+    await api.saveMatchState(match.id, snapshot);
+  }
 
   async function pair(slotID: string) {
     try {
@@ -412,10 +536,44 @@ function MatchMode({
     setBleVersion((value) => value + 1);
   }
 
-  async function penalize(slot: RobotSlot) {
-    await api.recordEvent(match.id, { type: 'robot_timeout', slot: slot.label, seconds: settings.penalty_seconds || 60 });
-    await controller.penalty(slot.id, settings.penalty_seconds || 60).catch((err: Error) => onError(err.message));
+  async function resetTimer() {
+    const nextRemaining = stageDuration(stage, settings);
+    const snapshot = runtimeState(stage, false, nextRemaining, score1, score2, comments, penaltyTimers);
+    setRunning(false);
+    setRemaining(nextRemaining);
+    liveStateRef.current = snapshot;
+    await api.recordEvent(match.id, { type: 'timer_reset', stage, remaining: nextRemaining });
+    await api.saveMatchState(match.id, snapshot);
+  }
+
+  async function playRobots() {
+    await api.recordEvent(match.id, { type: 'bluetooth_play_all', stage, remaining });
+    await controller.playAll(activeSlotIDs).catch((err: Error) => onError(err.message));
     setBleVersion((value) => value + 1);
+  }
+
+  async function stopRobots() {
+    await api.recordEvent(match.id, { type: 'bluetooth_stop_all', stage, remaining });
+    await controller.stopAll(activeSlotIDs).catch((err: Error) => onError(err.message));
+    setBleVersion((value) => value + 1);
+  }
+
+  async function penalize(slot: RobotSlot) {
+    const seconds = settings.penalty_seconds || 60;
+    setPenaltyTimers((current) => ({ ...current, [slot.id]: seconds }));
+    await api.recordEvent(match.id, { type: 'robot_timeout', slot: slot.label, seconds });
+    await controller.penalty(slot.id, seconds).catch((err: Error) => onError(err.message));
+    setBleVersion((value) => value + 1);
+  }
+
+  async function resetPenalty(slot: RobotSlot) {
+    const nextTimers = { ...penaltyTimers };
+    delete nextTimers[slot.id];
+    const snapshot = runtimeState(stage, running, remaining, score1, score2, comments, nextTimers);
+    setPenaltyTimers(nextTimers);
+    liveStateRef.current = snapshot;
+    await api.recordEvent(match.id, { type: 'robot_timeout_reset', slot: slot.label });
+    await api.saveMatchState(match.id, snapshot);
   }
 
   async function updateScore(team: 1 | 2, delta: number) {
@@ -432,6 +590,7 @@ function MatchMode({
     setRunning(false);
     try {
       await controller.stopAll(activeSlotIDs).catch(() => undefined);
+      await persistCurrentState();
       const updated = await api.finishMatch(match.id, {
         final_goals1: score1,
         final_goals2: score2,
@@ -466,6 +625,10 @@ function MatchMode({
               <Pause size={20} />
               Stop
             </button>
+            <button className="secondary icon-button" onClick={() => void resetTimer()} disabled={stage === 'full_time'}>
+              <TimerReset size={20} />
+              Reset
+            </button>
           </div>
         </div>
         <TeamScore name={match.team2_name || 'Team 2'} score={score2} onChange={(delta) => void updateScore(2, delta)} />
@@ -474,7 +637,17 @@ function MatchMode({
       <section className="panel">
         <div className="section-head">
           <h2>Robot Control</h2>
-          <span className={bluetoothSupported() ? 'pill ok' : 'pill warn'}>{bluetoothSupported() ? 'Web Bluetooth' : 'No Bluetooth'}</span>
+          <div className="section-actions">
+            <span className={bluetoothSupported() ? 'pill ok' : 'pill warn'}>{bluetoothSupported() ? 'Web Bluetooth' : 'No Bluetooth'}</span>
+            <button className="secondary icon-button" onClick={() => void playRobots()}>
+              <Play size={18} />
+              Play All
+            </button>
+            <button className="danger icon-button" onClick={() => void stopRobots()}>
+              <Pause size={18} />
+              Stop All
+            </button>
+          </div>
         </div>
         <div className="robot-control-grid">
           {connections.map((connection) => (
@@ -483,11 +656,22 @@ function MatchMode({
                 <strong>{connection.slot.label}</strong>
                 <span>{connection.status}</span>
               </div>
+              <div className={penaltyTimers[connection.slot.id] ? 'penalty-countdown active' : 'penalty-countdown'}>
+                {penaltyTimers[connection.slot.id] ? formatSeconds(penaltyTimers[connection.slot.id]) : 'Ready'}
+              </div>
               <button className="secondary square-button" onClick={() => void pair(connection.slot.id)} title={`Pair ${connection.slot.label}`}>
                 <Bluetooth size={18} />
               </button>
               <button className="warning square-button" onClick={() => void penalize(connection.slot)} title={`Timeout ${connection.slot.label}`}>
                 <TimerReset size={18} />
+              </button>
+              <button
+                className="secondary square-button"
+                onClick={() => void resetPenalty(connection.slot)}
+                disabled={!penaltyTimers[connection.slot.id]}
+                title={`Reset timeout ${connection.slot.label}`}
+              >
+                <RefreshCcw size={18} />
               </button>
             </div>
           ))}
@@ -578,35 +762,47 @@ function AdminCallback() {
 }
 
 function AdminPanel() {
-  const [authConfig, setAuthConfig] = useState<AuthConfig | null>(null);
-  const [tokenDraft, setTokenDraft] = useState(getAdminToken());
   const [matches, setMatches] = useState<Match[]>([]);
   const [leagues, setLeagues] = useState<LeagueSettings[]>([]);
   const [error, setError] = useState('');
+  const [loading, setLoading] = useState(false);
   const [syncing, setSyncing] = useState(false);
-
-  useEffect(() => {
-    api.authConfig().then(setAuthConfig).catch((err: Error) => setError(err.message));
-  }, []);
+  const [lastSync, setLastSync] = useState('');
 
   async function load() {
+    setLoading(true);
     try {
       const [loadedMatches, loadedLeagues] = await Promise.all([api.adminMatches(), api.leagues()]);
-      setMatches(loadedMatches);
+      setMatches(sortMatchesByStartTime(loadedMatches));
       setLeagues(loadedLeagues);
     } catch (err) {
       setError((err as Error).message);
+    } finally {
+      setLoading(false);
     }
   }
 
   useEffect(() => {
-    void load();
+    let disposed = false;
+    async function initialLoad() {
+      await load();
+      if (!disposed) void sync();
+    }
+    void initialLoad();
+    const interval = window.setInterval(() => {
+      if (!document.hidden) void sync();
+    }, 60000);
+    return () => {
+      disposed = true;
+      window.clearInterval(interval);
+    };
   }, []);
 
   async function sync() {
     setSyncing(true);
     try {
-      await api.syncCatigoal();
+      const stats = await api.syncCatigoal();
+      setLastSync(`${stats.matches ?? 0} matches, ${stats.fields ?? 0} fields`);
       await load();
     } catch (err) {
       setError((err as Error).message);
@@ -615,9 +811,9 @@ function AdminPanel() {
     }
   }
 
-  async function saveLeague(league: LeagueSettings, robots: number) {
+  async function saveLeague(league: LeagueSettings, body: Partial<LeagueSettings>) {
     try {
-      const updated = await api.updateLeague(league.id, { robots_per_team: robots });
+      const updated = await api.updateLeague(league.id, body);
       setLeagues((current) => current.map((item) => (item.id === updated.id ? updated : item)));
     } catch (err) {
       setError((err as Error).message);
@@ -640,9 +836,15 @@ function AdminPanel() {
           <div className="eyebrow">RCJV Paperless</div>
           <h1>Admin</h1>
         </div>
-        <a className="icon-link" href="/">
-          Field Console
-        </a>
+        <div className="topbar-actions">
+          <a className="icon-link" href="/">
+            Field Console
+          </a>
+          <button className="secondary icon-button" onClick={signOut}>
+            <LogOut size={18} />
+            Sign Out
+          </button>
+        </div>
       </header>
 
       {error && (
@@ -656,26 +858,13 @@ function AdminPanel() {
         <section className="toolbar-band">
           <button className="primary icon-button" onClick={sync} disabled={syncing}>
             <RefreshCcw size={18} />
-            Sync Catigoal
+            {syncing ? 'Syncing' : 'Sync Catigoal'}
           </button>
-          {!authConfig?.dev_allow && (
-            <>
-              <button className="secondary icon-button" onClick={() => authConfig && void beginLogin(authConfig)}>
-                <LogIn size={18} />
-                FusionAuth
-              </button>
-              <label className="token-input">
-                <span>Bearer</span>
-                <input
-                  value={tokenDraft}
-                  onChange={(event) => {
-                    setTokenDraft(event.target.value);
-                    setAdminToken(event.target.value);
-                  }}
-                />
-              </label>
-            </>
-          )}
+          <button className="secondary icon-button" onClick={() => void load()} disabled={loading}>
+            <RefreshCcw size={18} />
+            Refresh
+          </button>
+          <span className="pill">{lastSync || (loading ? 'Loading' : 'Auto sync on')}</span>
         </section>
 
         <section className="panel">
@@ -693,13 +882,14 @@ function AdminPanel() {
         <section className="panel">
           <div className="section-head">
             <h2>Matches</h2>
-            <span className="pill">{matches.length}</span>
+            <span className="pill">{loading ? 'Loading' : matches.length}</span>
           </div>
           <div className="table-wrap">
             <table className="admin-table">
               <thead>
                 <tr>
                   <th>Match</th>
+                  <th>Start</th>
                   <th>Field</th>
                   <th>Teams</th>
                   <th>Status</th>
@@ -710,6 +900,7 @@ function AdminPanel() {
                 {matches.map((match) => (
                   <tr key={match.id}>
                     <td>#{match.number} {match.league_abbrev}</td>
+                    <td>{formatMatchTime(match)}</td>
                     <td>{match.field_name}</td>
                     <td>
                       {match.team1_name} vs {match.team2_name}
@@ -734,8 +925,38 @@ function AdminPanel() {
   );
 }
 
-function LeagueSettingEditor({ league, onSave }: { league: LeagueSettings; onSave: (league: LeagueSettings, robots: number) => void }) {
+function LeagueSettingEditor({ league, onSave }: { league: LeagueSettings; onSave: (league: LeagueSettings, body: Partial<LeagueSettings>) => void }) {
   const [robots, setRobots] = useState(league.robots_per_team);
+  const [periodSeconds, setPeriodSeconds] = useState(league.period_seconds);
+  const [halfTimeSeconds, setHalfTimeSeconds] = useState(league.half_time_seconds);
+  const [penaltySeconds, setPenaltySeconds] = useState(league.penalty_seconds);
+  const [checklistSchema, setChecklistSchema] = useState(JSON.stringify(league.checklist_schema ?? {}, null, 2));
+  const [jsonError, setJsonError] = useState('');
+
+  useEffect(() => {
+    setRobots(league.robots_per_team);
+    setPeriodSeconds(league.period_seconds);
+    setHalfTimeSeconds(league.half_time_seconds);
+    setPenaltySeconds(league.penalty_seconds);
+    setChecklistSchema(JSON.stringify(league.checklist_schema ?? {}, null, 2));
+  }, [league]);
+
+  function save() {
+    try {
+      const parsed = JSON.parse(checklistSchema);
+      setJsonError('');
+      onSave(league, {
+        robots_per_team: robots,
+        period_seconds: periodSeconds,
+        half_time_seconds: halfTimeSeconds,
+        penalty_seconds: penaltySeconds,
+        checklist_schema: parsed
+      });
+    } catch (err) {
+      setJsonError((err as Error).message);
+    }
+  }
+
   return (
     <div className="league-item">
       <strong>{league.league_name || league.league_abbrev}</strong>
@@ -743,7 +964,24 @@ function LeagueSettingEditor({ league, onSave }: { league: LeagueSettings; onSav
         <span>Robots</span>
         <input type="number" min={1} max={5} value={robots} onChange={(event) => setRobots(Number(event.target.value))} />
       </label>
-      <button className="secondary icon-button" onClick={() => onSave(league, robots)}>
+      <label>
+        <span>Period</span>
+        <input type="number" min={60} max={3600} value={periodSeconds} onChange={(event) => setPeriodSeconds(Number(event.target.value))} />
+      </label>
+      <label>
+        <span>Half Time</span>
+        <input type="number" min={0} max={1800} value={halfTimeSeconds} onChange={(event) => setHalfTimeSeconds(Number(event.target.value))} />
+      </label>
+      <label>
+        <span>Penalty</span>
+        <input type="number" min={0} max={600} value={penaltySeconds} onChange={(event) => setPenaltySeconds(Number(event.target.value))} />
+      </label>
+      <label className="schema-field">
+        <span>Checklist JSON</span>
+        <textarea value={checklistSchema} onChange={(event) => setChecklistSchema(event.target.value)} />
+      </label>
+      {jsonError && <div className="inline-error">{jsonError}</div>}
+      <button className="secondary icon-button" onClick={save}>
         <Save size={16} />
         Save
       </button>
@@ -773,6 +1011,82 @@ function buildSlots(robotsPerTeam: number): RobotSlot[] {
   return slots;
 }
 
+function runtimeState(
+  stage: MatchStage,
+  running: boolean,
+  remaining: number,
+  score1: number,
+  score2: number,
+  comments: string,
+  penaltyTimers: PenaltyTimers
+): MatchRuntimeState {
+  const activePenalties: PenaltyTimers = {};
+  for (const [slotID, seconds] of Object.entries(penaltyTimers)) {
+    if (Number.isFinite(seconds) && seconds > 0) activePenalties[slotID] = Math.floor(seconds);
+  }
+  return {
+    stage,
+    running,
+    remaining: Math.max(0, Math.floor(remaining)),
+    score1: Math.max(0, Math.floor(score1)),
+    score2: Math.max(0, Math.floor(score2)),
+    comments,
+    penalty_timers: activePenalties,
+    saved_at: new Date().toISOString()
+  };
+}
+
+function restoreRuntimeState(match: Match, settings: LeagueSettings): MatchRuntimeState {
+  const fallback = runtimeState(
+    'first_half',
+    false,
+    settings.period_seconds || 600,
+    match.score_sheet?.final_goals1 ?? match.goals1 ?? 0,
+    match.score_sheet?.final_goals2 ?? match.goals2 ?? 0,
+    match.score_sheet?.comments ?? '',
+    {}
+  );
+  const saved = match.score_sheet?.state;
+  if (!saved) return fallback;
+
+  const savedAt = Date.parse(saved.saved_at || '');
+  const elapsed = Number.isFinite(savedAt) ? Math.max(0, Math.floor((Date.now() - savedAt) / 1000)) : 0;
+  const stage = isMatchStage(saved.stage) ? saved.stage : fallback.stage;
+  const running = Boolean(saved.running) && stage !== 'full_time';
+  return {
+    stage,
+    running,
+    remaining: Math.max(0, numberOr(saved.remaining, fallback.remaining) - (running ? elapsed : 0)),
+    score1: numberOr(saved.score1, fallback.score1),
+    score2: numberOr(saved.score2, fallback.score2),
+    comments: typeof saved.comments === 'string' ? saved.comments : fallback.comments,
+    penalty_timers: restorePenaltyTimers(saved.penalty_timers, elapsed),
+    saved_at: new Date().toISOString()
+  };
+}
+
+function restorePenaltyTimers(saved: PenaltyTimers | undefined, elapsed: number): PenaltyTimers {
+  const timers: PenaltyTimers = {};
+  for (const [slotID, seconds] of Object.entries(saved ?? {})) {
+    const remaining = Math.max(0, numberOr(seconds, 0) - elapsed);
+    if (remaining > 0) timers[slotID] = remaining;
+  }
+  return timers;
+}
+
+function numberOr(value: unknown, fallback: number): number {
+  return typeof value === 'number' && Number.isFinite(value) ? value : fallback;
+}
+
+function isMatchStage(value: unknown): value is MatchStage {
+  return value === 'first_half' || value === 'half_time' || value === 'second_half' || value === 'full_time';
+}
+
+function signOut() {
+  setAdminToken('');
+  window.location.reload();
+}
+
 function formatSeconds(total: number): string {
   const minutes = Math.floor(total / 60);
   const seconds = total % 60;
@@ -786,10 +1100,30 @@ function formatMatchTime(match: Match): string {
   return match.start_raw || 'Time open';
 }
 
+function sortMatchesByStartTime(matches: Match[]): Match[] {
+  return [...matches].sort((a, b) => {
+    const byStart = matchStartValue(a) - matchStartValue(b);
+    if (byStart !== 0) return byStart;
+    if (a.number !== b.number) return a.number - b.number;
+    return a.id - b.id;
+  });
+}
+
+function matchStartValue(match: Match): number {
+  const parsed = Date.parse(match.start_at || match.start_raw || '');
+  return Number.isFinite(parsed) ? parsed : Number.POSITIVE_INFINITY;
+}
+
 function statusLabel(status: string): string {
   return status.replaceAll('_', ' ');
 }
 
 function stageLabel(stage: MatchStage): string {
   return statusLabel(stage);
+}
+
+function stageDuration(stage: MatchStage, settings: LeagueSettings): number {
+  if (stage === 'half_time') return settings.half_time_seconds || 300;
+  if (stage === 'full_time') return 0;
+  return settings.period_seconds || 600;
 }

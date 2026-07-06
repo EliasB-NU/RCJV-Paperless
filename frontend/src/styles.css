@@ -85,7 +85,8 @@ button:disabled {
 
 .split-workspace,
 .match-workspace,
-.admin-workspace {
+.admin-workspace,
+.auth-workspace {
   display: grid;
   gap: 18px;
 }
@@ -121,6 +122,14 @@ button:disabled {
   justify-content: space-between;
   gap: 16px;
   margin-bottom: 16px;
+}
+
+.section-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 10px;
 }
 
 .section-head h2,
@@ -406,6 +415,8 @@ textarea {
 .score-actions,
 .clock-actions {
   display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
   gap: 10px;
 }
 
@@ -420,17 +431,23 @@ textarea {
 }
 
 .robot-control-grid,
-.league-grid,
 .signing-links {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
   gap: 12px;
+}
+
+.league-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 360px), 440px));
+  align-items: start;
+  justify-content: start;
+  gap: 14px;
 }
 
 .robot-control,
 .league-item {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto auto;
   align-items: center;
   gap: 10px;
   min-height: 68px;
@@ -438,6 +455,10 @@ textarea {
   border: 1px solid #d9dfdc;
   border-radius: 8px;
   background: #fbfcfb;
+}
+
+.robot-control {
+  grid-template-columns: minmax(0, 1fr) 82px auto auto auto;
 }
 
 .robot-control span,
@@ -448,7 +469,41 @@ textarea {
 }
 
 .league-item {
-  grid-template-columns: minmax(0, 1fr) 96px auto;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-items: end;
+}
+
+.league-item > strong,
+.league-item .schema-field,
+.league-item .inline-error,
+.league-item .icon-button {
+  grid-column: 1 / -1;
+}
+
+.league-item .icon-button {
+  justify-self: start;
+}
+
+.league-item .schema-field textarea {
+  min-height: 180px;
+  font-family: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace;
+  font-size: 0.84rem;
+}
+
+.penalty-countdown {
+  display: grid;
+  place-items: center;
+  min-height: 42px;
+  border: 1px solid #d9dfdc;
+  border-radius: 6px;
+  color: #65756f;
+  font-weight: 900;
+}
+
+.penalty-countdown.active {
+  border-color: #d18b1f;
+  background: #fff4d9;
+  color: #704600;
 }
 
 .signing-panel {
@@ -467,6 +522,20 @@ textarea {
 
 .token-input {
   min-width: 280px;
+}
+
+.auth-panel {
+  max-width: 520px;
+}
+
+.inline-error {
+  padding: 10px 12px;
+  border: 1px solid #e1b3b3;
+  border-radius: 6px;
+  background: #fff1f1;
+  color: #7d2626;
+  font-size: 0.9rem;
+  font-weight: 700;
 }
 
 @media (max-width: 900px) {
@@ -500,5 +569,15 @@ textarea {
   .team-score,
   .clock-panel {
     min-height: 174px;
+  }
+
+  .robot-control,
+  .league-item {
+    grid-template-columns: 1fr;
+    align-items: stretch;
+  }
+
+  .square-button {
+    width: 100%;
   }
 }

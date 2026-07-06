@@ -45,7 +45,15 @@ func (a *API) authConfig(c *fiber.Ctx) error {
 	})
 }
 
+func (a *API) requireAuthenticated(c *fiber.Ctx) error {
+	return a.requireToken(c, false)
+}
+
 func (a *API) requireAdmin(c *fiber.Ctx) error {
+	return a.requireToken(c, true)
+}
+
+func (a *API) requireToken(c *fiber.Ctx, requireRole bool) error {
 	if a.CFG.Auth.DevAllowAdmin {
 		return c.Next()
 	}
@@ -58,13 +66,13 @@ func (a *API) requireAdmin(c *fiber.Ctx) error {
 	if token == "" || token == header {
 		return fail(fiber.StatusUnauthorized, "missing bearer token")
 	}
-	if err := a.validateJWT(c.Context(), token); err != nil {
+	if err := a.validateJWT(c.Context(), token, requireRole); err != nil {
 		return fail(fiber.StatusUnauthorized, err.Error())
 	}
 	return c.Next()
 }
 
-func (a *API) validateJWT(ctx context.Context, token string) error {
+func (a *API) validateJWT(ctx context.Context, token string, requireRole bool) error {
 	parts := strings.Split(token, ".")
 	if len(parts) != 3 {
 		return errors.New("invalid token")
@@ -104,10 +112,10 @@ func (a *API) validateJWT(ctx context.Context, token string) error {
 	if err := json.Unmarshal(claimsBytes, &claims); err != nil {
 		return errors.New("invalid token claims")
 	}
-	return a.validateClaims(claims)
+	return a.validateClaims(claims, requireRole)
 }
 
-func (a *API) validateClaims(claims map[string]any) error {
+func (a *API) validateClaims(claims map[string]any, requireRole bool) error {
 	if iss, _ := claims["iss"].(string); iss != a.CFG.Auth.Issuer {
 		return errors.New("invalid token issuer")
 	}
@@ -118,7 +126,7 @@ func (a *API) validateClaims(claims map[string]any) error {
 	if !ok || time.Unix(int64(exp), 0).Before(time.Now().Add(-30*time.Second)) {
 		return errors.New("token is expired")
 	}
-	if a.CFG.Auth.RequiredRole != "" && !rolesContain(claims["roles"], a.CFG.Auth.RequiredRole) {
+	if requireRole && a.CFG.Auth.RequiredRole != "" && !rolesContain(claims["roles"], a.CFG.Auth.RequiredRole) {
 		return errors.New("required admin role missing")
 	}
 	return nil

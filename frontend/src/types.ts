@@ -35,6 +35,7 @@ export type ScoreSheet = {
   id: number;
   precheck: MatchPrecheck;
   events: unknown[];
+  state?: MatchRuntimeState;
   comments: string;
   kickoff_team: string;
   penalty_goals1: number;
@@ -90,6 +91,19 @@ export type MatchPrecheck = {
     team1: string;
     team2: string;
   };
+};
+
+export type PenaltyTimers = Record<string, number>;
+
+export type MatchRuntimeState = {
+  stage: 'first_half' | 'half_time' | 'second_half' | 'full_time';
+  running: boolean;
+  remaining: number;
+  score1: number;
+  score2: number;
+  comments: string;
+  penalty_timers: PenaltyTimers;
+  saved_at: string;
 };
 
 export type AuthConfig = {

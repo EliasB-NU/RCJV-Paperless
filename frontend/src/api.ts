@@ -1,4 +1,4 @@
-import type { AuthConfig, Field, LeagueSettings, Match, MatchPrecheck } from './types';
+import type { AuthConfig, Field, LeagueSettings, Match, MatchPrecheck, MatchRuntimeState } from './types';
 
 const tokenKey = 'rcjv.admin.token';
 
@@ -46,6 +46,16 @@ export const api = {
     request<Match>(`/api/matches/${id}/events`, {
       method: 'POST',
       body: JSON.stringify({ event })
+    }),
+  saveMatchState: (id: number, state: MatchRuntimeState) =>
+    request<Match>(`/api/matches/${id}/state`, {
+      method: 'POST',
+      body: JSON.stringify({
+        state,
+        final_goals1: state.score1,
+        final_goals2: state.score2,
+        comments: state.comments
+      })
     }),
   finishMatch: (id: number, body: unknown) =>
     request<Match>(`/api/matches/${id}/finish`, {

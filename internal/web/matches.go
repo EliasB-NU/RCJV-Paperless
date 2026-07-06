@@ -43,6 +43,13 @@ type finishMatchRequest struct {
 	Events        any    `json:"events"`
 }
 
+type matchStateRequest struct {
+	State       json.RawMessage `json:"state"`
+	FinalGoals1 *int            `json:"final_goals1"`
+	FinalGoals2 *int            `json:"final_goals2"`
+	Comments    *string         `json:"comments"`
+}
+
 func (a *API) listFields(c *fiber.Ctx) error {
 	var fields []database.Field
 	if err := a.DB.Order("sort_order asc, name asc").Find(&fields).Error; err != nil {
@@ -152,6 +159,54 @@ func (a *API) recordMatchEvent(c *fiber.Ctx) error {
 	}
 	if err := advanceMatchStatus(a.DB, id, database.MatchStatusInMatch); err != nil {
 		return err
+	}
+	return a.getMatch(c)
+}
+
+func (a *API) saveMatchState(c *fiber.Ctx) error {
+	id, err := parseUintParam(c, "id")
+	if err != nil {
+		return err
+	}
+	var req matchStateRequest
+	if err := json.Unmarshal(c.Body(), &req); err != nil {
+		return fail(fiber.StatusBadRequest, "invalid match state payload")
+	}
+
+	sheet, err := ensureScoreSheet(a.DB, id)
+	if err != nil {
+		return err
+	}
+	if len(req.State) > 0 && string(req.State) != "null" {
+		if !json.Valid(req.State) {
+			return fail(fiber.StatusBadRequest, "invalid match state JSON")
+		}
+		sheet.StateJSON = string(req.State)
+	}
+	if req.Comments != nil {
+		sheet.Comments = *req.Comments
+	}
+	if req.FinalGoals1 != nil {
+		sheet.FinalGoals1 = *req.FinalGoals1
+	}
+	if req.FinalGoals2 != nil {
+		sheet.FinalGoals2 = *req.FinalGoals2
+	}
+	if err := a.DB.Save(sheet).Error; err != nil {
+		return err
+	}
+
+	updates := map[string]any{}
+	if req.FinalGoals1 != nil {
+		updates["goals1"] = *req.FinalGoals1
+	}
+	if req.FinalGoals2 != nil {
+		updates["goals2"] = *req.FinalGoals2
+	}
+	if len(updates) > 0 {
+		if err := a.DB.Model(&database.ImportedMatch{}).Where("id = ?", id).Updates(updates).Error; err != nil {
+			return err
+		}
 	}
 	return a.getMatch(c)
 }
@@ -385,6 +440,7 @@ func scoreSheetJSON(sheet database.ScoreSheet) any {
 		"id":             sheet.ID,
 		"precheck":       jsonValue(sheet.PrecheckJSON, fiber.Map{}),
 		"events":         jsonValue(sheet.EventsJSON, []any{}),
+		"state":          jsonValue(sheet.StateJSON, fiber.Map{}),
 		"comments":       sheet.Comments,
 		"kickoff_team":   sheet.KickoffTeam,
 		"penalty_goals1": sheet.PenaltyGoals1,
