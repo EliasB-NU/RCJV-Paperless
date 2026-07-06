@@ -63,10 +63,10 @@ type ImportedMatch struct {
 	SignedAt  *time.Time `json:"signed_at"`
 	EnteredAt *time.Time `json:"entered_at"`
 
-	ScoreSheet ScoreSheet `json:"score_sheet,omitempty"`
-	DocuSeal   DocuSealSubmission
-	CreatedAt  time.Time `json:"created_at"`
-	UpdatedAt  time.Time `json:"updated_at"`
+	ScoreSheet ScoreSheet         `gorm:"foreignKey:MatchID;references:ID" json:"score_sheet,omitempty"`
+	DocuSeal   DocuSealSubmission `gorm:"foreignKey:MatchID;references:ID" json:"docuseal,omitempty"`
+	CreatedAt  time.Time          `json:"created_at"`
+	UpdatedAt  time.Time          `json:"updated_at"`
 }
 
 type ScoreSheet struct {
